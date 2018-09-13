@@ -4,7 +4,8 @@
 source ../Functional-Bash/functional.sh
 
 ###START GLOBAL CONSTANTS
-STORE="/run/media/fabian/ZFS/ZShare/GitHub/betterConfigManager/STORE"
+MAINDIR="/run/media/fabian/SD128GB/GitHub/betterConfigManager"
+STORE="/run/media/fabian/SD128GB/GitHub/betterConfigManager/STORE"
 flags=(
 #possible flags to supply to the scriipt
 #format fullversion;s[hort]
@@ -85,24 +86,69 @@ isCareful(){
     echo 0
 }
 
-#Signature add FILE2ADD suppliedTags[@] $secure $carefully
-add(){ 
-    file2add=${1}
-    secureMode=${3}
-    carefully=${4}
+isFile(){
+    args=("${@}")
+    for i in ${args[@]}; do
+        [[ -e $i ]] && parameters["PATHS"]=(${parameters["PATHS"]} $i)
+    done
+}
 
+parseArguments(){
+    local -n lpar=$1
+
+    case ${BASH_ARGV[-1]} in
+        "help"|"-h"      ) lpar["CMD"]=help ;;
+        "add"|"a"        ) lpar["CMD"]="add"  ;;
+        "justadd"|"ja"   ) lpar["CMD"]=justadd ;;
+        "link"|"l"       ) lpar["CMD"]=link ;;
+        "update"|"up"    ) lpar["CMD"]=update ;;
+        "modify"|"mod"   ) lpar["CMD"]=modify ;;
+        "init"           );;
+        "inits"          );;
+        "report"|"rp"    );;
+                        *) echo "ERROR: First parameter has to be command. See --help"; exit ;;
+    esac
+
+    for (( i=$((${#BASH_ARGV[@]}-2));i>=0; i-- )); do
+        case ${BASH_ARGV[$i]} in
+        "--tag"|"-t")
+            lpar["TAGS"]="${lpar["TAGS"]} $(echo ${BASH_ARGV[$(($i-1))]}|sed 's/,/\ /g') "
+            i=$(($i-1))
+            ;;
+        "-s"|"--secure") 
+            lpar["SECURE"]=1
+            ;;
+        
+        "--carefully") 
+            lpar["CAREFUL"]=1
+            ;;
+        
+        *)
+            [[ -e ${BASH_ARGV[$i]} ]] \
+                && lpar["PATHS"]="${lpar["PATHS"]} ${BASH_ARGV[$i]}" \
+                || { echo "ERROR: ${BASH_ARGV[$i]} is neither command nor flag or file." ;
+                     exit ; }
+            ;;
+        esac
+    done
+}
+
+#Signature $1=file 2=tags $3=secure $4=interactive
+createMETA(){
     FILENAME=$(basename $1)
     FILEPATH=$(dirname $(readlink -f $1))
     local -n TAGS=$2
+    SECURE=${3:-0} #Sets secure to 0 if not set.
+    INTERACTIVE=${4:-0} #Sets interactive to 0 if not set
+
+    #if $HOME in FILEPATH || substitutes /home/<user>/ with HOME in METAFILE
     if [[ $(grep $HOME <<< $FILEPATH) ]]; then 
-        DIRNAME="\$HOME/"$(cut -d '/' -f4- <<< $PWD)
-        [ $secureMode -eq 1 ] && SECURE=1 || SECURE=0 ;
+        DIRNAME="HOME/"$(cut -d '/' -f4- <<< $FILEPATH)
     else
         DIRNAME=$FILEPATH
-        #Checks if in non-user-owned dir. 
+        #Checks if in non-user-owned dir. Sets secure.
         [ ! -O $DIRNAME ] && SECURE=1 || SECURE=0
     fi
-    TAGS="${suppliedTags[@]}"
          
     #Create __META-File
     METAFILE="__META-$(basename $1)"
@@ -118,28 +164,54 @@ DIRNAME=$DIRNAME
 TAGS=${TAGS[@]}
 SECURE=$SECURE
 EOF
-     
+
+echo $SECURE
+}
+
+isInStore(){
+    [ -e "$MAINDIR/META/__META-$(basename ${1})" ] && echo 1 || echo 0
+}
+
+#Signature add FILE2ADD suppliedTags[@] $secure $carefully
+add(){ 
+    file2add=${1}
+    TAGS=(${!2})
+    SECURE=${3}
+    carefully=${4}
+
+    [[ ! $(isInStore $1) -eq 1 ]] \
+    && newSECUREval=$(createMETA $1 ${2} $3 $4) \
+    || { echo "Already in store" ; exit ; }
+    
+    ##createMETA returns the new value of SECURE 
+    ##since it sets that value depending on the files location
+    SECURE=$newSECUREval
+
     #Importing File and creating symlink in place
     case $SECURE in 
         1) sudo mv $1 $SSTORE/
-           sudo ln -s $SSTORE/$FILENAME $(readlink -f $1)
+           sudo ln -s $SSTORE/$(basename $file2add) $(readlink -f $1)
            ;;
         0) mv $1 $STORE/
-           ln -s $STORE/$FILENAME $(readlink -f $1)
+           ln -s $STORE/$(basename $file2add) $(readlink -f $1)
            ;;
     esac
 
 }
 
-#link(){ ; }
+#link(){ 
+#    
+#}
+
 #
 #update(){ 
 #    SUPPOSED_PATH=$(
 #}
 
 modify(){ 
-    [[ -e $STORAGE/$1 ]] && $EDITOR $STORAGE/$1 || echo "$STORAGE/META/$1 does not exist"
-    [[ -e $SECURE/$1 ]]  && sudoedit $SECURE/$1 || echo "$SECURE/META/$1 does not exist"
+    [[ -e $MAINDIR/META/__META-$1 ]] \
+    && $EDITOR $MAINDIR/META/__META-$1 \
+    || echo "--META-$1 does not exist"
 }
 #
 #remove(){ ; }
@@ -152,25 +224,29 @@ modify(){
 
 
 main(){ #Entrypoint to the script
-    suppliedTags=($(getTags $@))
-    secureMode=$(isSecureMode $@)
-    careful=$(isCareful $@)
-    echo "Tags: ${suppliedTags[@]}"
-    echo "Securemode: $secureMode"
-    echo "Careful: $careful"
+    #suppliedTags=($(getTags $@))
+    #secureMode=$(isSecureMode $@)
+    #careful=$(isCareful $@)
+    #echo "Tags: ${suppliedTags[@]}"
+    #echo "Securemode: $secureMode"
+    #echo "Careful: $careful"
 
-    case "$1" in
-       "help"|"-h"      ) help ;;
-       "add"|"a"        ) add ${BASH_ARGV:-1} suppliedTags $secureMode $careful ;; 
-       "justadd"|"ja"   ) ;; 
-       "link"|"l"       ) ;; 
-       "update"|"up"    ) ;; 
-       "modify"|"mod"   ) modify $2 ;; 
-       "init"           ) ;; 
-       "inits"          ) ;; 
-       "report"|"rp"    ) ;;
-                       *) echo "Invalid command: ${1}"; help ;; 
-    esac
-
+#    case "$1" in
+#       "help"|"-h"      ) help ;;
+#       "add"|"a"        ) add ${BASH_ARGV:-1} suppliedTags[@] $secureMode $careful ;; 
+#       "justadd"|"ja"   ) add ${BASH_ARGV:-1} suppliedTags[@] $secureMode $careful 1 ;;  
+#       "link"|"l"       ) link ;; 
+#       "update"|"up"    ) ;; 
+#       "modify"|"mod"   ) modify $2 ;; 
+#       "init"           ) ;; 
+#       "inits"          ) ;; 
+#       "report"|"rp"    ) ;;
+#                       *) echo "Invalid command: ${1}"; help ;; 
+#    esac
+declare -A parameters # -A SUPER IMPORTANT. WONT WORK OTHERWISE: -A == associative array
+parseArguments parameters 
+echo "COMMAND: ${parameters["CMD"]}"
+echo "TAGS: ${parameters["TAGS"]}"
+echo "FILES: ${parameters["PATHS"]}"
 }
-main $@
+main
