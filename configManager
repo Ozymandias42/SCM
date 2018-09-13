@@ -1,0 +1,176 @@
+#!/bin/bash
+
+###LIBRARIES TO LOAD
+source ../Functional-Bash/functional.sh
+
+###START GLOBAL CONSTANTS
+STORE="/run/media/fabian/ZFS/ZShare/GitHub/betterConfigManager/STORE"
+flags=(
+#possible flags to supply to the scriipt
+#format fullversion;s[hort]
+       "--help;-h"
+       "add;a"
+       "justadd;ja"
+       "link;l"
+       "unlink;ul"
+       "update;up"
+       "modify;mod"
+       "remove;rm"
+       "initialise;init"
+       "init-secure-store;inits"
+       "report;rp"
+       "--tag;-t"
+       "--secure;-s"
+       "--carefully")
+
+descriptions=("$(basename $0) command --flag --tag tag1,tag2,tagN file\nPrints this help"
+              "Adds file to the config-store and replaces original with symlink"
+              "Adds file to the config-store without replacing the original"
+              "Creates symlink to specified file[s in [-t]ag-group]"
+              "Removes symlink for specified file[s in [-t]ag-group]"
+              "Checks existing symlinks. Updates them if necessary"
+              "Allows the user to modify a files's config"
+              "Removes from storage"
+              "Initialises config-storage with supplied git-repo"
+              "Initialised secure config-storage and secure-config daemon"
+              "Print report about configs in effect"
+              "Lets the user specify one or more tags. [tag1,tag2,..,tagN]"
+              "Lets the user specify the mode of operation. Secure or insecure"
+              "Asks the user whenever an operation requires a decision")
+
+help(){
+#Creates --help output
+    #Formatting of --help output
+    buildHelp() { printf "%${3}s\t %s" "${1}" "$2" ; printf "\n" ; }
+    
+    ###reformats list of flags by substituting ';' with ', ' use with ((p)ref)map
+    flag4help(){ echo "${1/;/', '}" ; }
+    
+    #howto call: returnlongest [0-9]+ ".*" ###returns length of longest string in list
+    ###use with ((p)ref)foldr
+    returnlongest(){ [[ ${1} -ge ${#2} ]] && echo ${1} || echo ${#2} ; }
+    
+    helpflags=()
+    prefmap flag4help flags[@] helpflags
+    leftpadding=0
+    preffoldr returnlongest helpflags[@] leftpadding
+    res=()
+    prefzipWith buildHelp helpflags[@] descriptions[@] res leftpadding[@]
+    forEach echo res[@] 
+ }
+
+getTags(){
+    args=("${@}")
+    suppliedTags=()
+    for ((i=0;i<${#args[@]};i++)); do
+            [[ ${args[$i]} == "--tag" ]] || [[ ${args[$i]} == "-t" ]] &&  
+                suppliedTags=( ${suppliedTags[@]} $( echo ${args[$(($i+1))]}|sed 's/,/\ /g' ) ) 
+    done
+    echo ${suppliedTags[@]}
+}
+
+isSecureMode(){ 
+    args=("${@}")
+    for i in ${args[@]}; do
+        [[ $i == "-s" ]] || [[ $i == "--secure" ]] && { echo 1; return; }
+    done
+    echo 0
+ }
+
+isCareful(){ 
+    args=("${@}")
+    for i in ${args[@]}; do
+        [[ $i == "--carefully" ]] && { echo 1; return; }
+    done
+    echo 0
+}
+
+#Signature add FILE2ADD suppliedTags[@] $secure $carefully
+add(){ 
+    file2add=${1}
+    secureMode=${3}
+    carefully=${4}
+
+    FILENAME=$(basename $1)
+    FILEPATH=$(dirname $(readlink -f $1))
+    local -n TAGS=$2
+    if [[ $(grep $HOME <<< $FILEPATH) ]]; then 
+        DIRNAME="\$HOME/"$(cut -d '/' -f4- <<< $PWD)
+        [ $secureMode -eq 1 ] && SECURE=1 || SECURE=0 ;
+    else
+        DIRNAME=$FILEPATH
+        #Checks if in non-user-owned dir. 
+        [ ! -O $DIRNAME ] && SECURE=1 || SECURE=0
+    fi
+    TAGS="${suppliedTags[@]}"
+         
+    #Create __META-File
+    METAFILE="__META-$(basename $1)"
+    [[ $SECURE -eq 1 ]] && METAFILE="SECURE/META/${METAFILE}" || METAFILE="META/${METAFILE}"
+    touch ${METAFILE}
+    ##NOTE: while >> is standard output-redirection <<- is here-docs
+    ##SEE: http://tldp.org/LDP/abs/html/here-docs.html
+    [[ $SECURE -eq 1 ]] && CMD="sudo tee" || CMD="cat"
+        
+    eval $CMD >> ${METAFILE} <<- EOF
+FILENAME=$FILENAME 
+DIRNAME=$DIRNAME
+TAGS=${TAGS[@]}
+SECURE=$SECURE
+EOF
+     
+    #Importing File and creating symlink in place
+    case $SECURE in 
+        1) sudo mv $1 $SSTORE/
+           sudo ln -s $SSTORE/$FILENAME $(readlink -f $1)
+           ;;
+        0) mv $1 $STORE/
+           ln -s $STORE/$FILENAME $(readlink -f $1)
+           ;;
+    esac
+
+}
+
+#link(){ ; }
+#
+#update(){ 
+#    SUPPOSED_PATH=$(
+#}
+
+modify(){ 
+    [[ -e $STORAGE/$1 ]] && $EDITOR $STORAGE/$1 || echo "$STORAGE/META/$1 does not exist"
+    [[ -e $SECURE/$1 ]]  && sudoedit $SECURE/$1 || echo "$SECURE/META/$1 does not exist"
+}
+#
+#remove(){ ; }
+#
+#init(){ ; }
+#
+#inits(){ ; }
+#
+#report(){ ; }
+
+
+main(){ #Entrypoint to the script
+    suppliedTags=($(getTags $@))
+    secureMode=$(isSecureMode $@)
+    careful=$(isCareful $@)
+    echo "Tags: ${suppliedTags[@]}"
+    echo "Securemode: $secureMode"
+    echo "Careful: $careful"
+
+    case "$1" in
+       "help"|"-h"      ) help ;;
+       "add"|"a"        ) add ${BASH_ARGV:-1} suppliedTags $secureMode $careful ;; 
+       "justadd"|"ja"   ) ;; 
+       "link"|"l"       ) ;; 
+       "update"|"up"    ) ;; 
+       "modify"|"mod"   ) modify $2 ;; 
+       "init"           ) ;; 
+       "inits"          ) ;; 
+       "report"|"rp"    ) ;;
+                       *) echo "Invalid command: ${1}"; help ;; 
+    esac
+
+}
+main $@
