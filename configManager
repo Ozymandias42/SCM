@@ -3,6 +3,12 @@
 ###LIBRARIES TO LOAD
 source ../Functional-Bash/functional.sh
 [ -e $HOME/.scm ] && source $HOME/.scm
+#CONFIG FILE SHOULD LOOK STH LIKE THIS:
+#MAINDIR="$HOME/user/.configStore"
+#STORE="$MAINDIR/STORE"
+#META="$MAINDIR/META"
+#SECURE="$MAINDIR/SECURE"
+#SMETA="$SECURE/META"
 
 ###START GLOBAL CONSTANTS
 
