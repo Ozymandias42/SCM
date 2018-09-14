@@ -2,10 +2,10 @@
 
 ###LIBRARIES TO LOAD
 source ../Functional-Bash/functional.sh
+[ -e $HOME/.scm ] && source $HOME/.scm
 
 ###START GLOBAL CONSTANTS
-MAINDIR="/run/media/fabian/SD128GB/GitHub/betterConfigManager"
-STORE="/run/media/fabian/SD128GB/GitHub/betterConfigManager/STORE"
+
 flags=(
 #possible flags to supply to the scriipt
 #format fullversion;s[hort]
@@ -60,44 +60,11 @@ help(){
     forEach echo res[@] 
  }
 
-getTags(){
-    args=("${@}")
-    suppliedTags=()
-    for ((i=0;i<${#args[@]};i++)); do
-            [[ ${args[$i]} == "--tag" ]] || [[ ${args[$i]} == "-t" ]] &&  
-                suppliedTags=( ${suppliedTags[@]} $( echo ${args[$(($i+1))]}|sed 's/,/\ /g' ) ) 
-    done
-    echo ${suppliedTags[@]}
-}
-
-isSecureMode(){ 
-    args=("${@}")
-    for i in ${args[@]}; do
-        [[ $i == "-s" ]] || [[ $i == "--secure" ]] && { echo 1; return; }
-    done
-    echo 0
- }
-
-isCareful(){ 
-    args=("${@}")
-    for i in ${args[@]}; do
-        [[ $i == "--carefully" ]] && { echo 1; return; }
-    done
-    echo 0
-}
-
-isFile(){
-    args=("${@}")
-    for i in ${args[@]}; do
-        [[ -e $i ]] && parameters["PATHS"]=(${parameters["PATHS"]} $i)
-    done
-}
-
 parseArguments(){
     local -n lpar=$1
 
     case ${BASH_ARGV[-1]} in
-        "help"|"-h"      ) lpar["CMD"]=help ;;
+        "help"|"-h"|"--help"      ) lpar["CMD"]=help ;;
         "add"|"a"        ) lpar["CMD"]="add"  ;;
         "justadd"|"ja"   ) lpar["CMD"]=justadd ;;
         "link"|"l"       ) lpar["CMD"]=link ;;
@@ -109,7 +76,7 @@ parseArguments(){
                         *) echo "ERROR: First parameter has to be command. See --help"; exit ;;
     esac
 
-    for (( i=$((${#BASH_ARGV[@]}-2));i>=0; i-- )); do
+    for (( i=$((${#BASH_ARGV[@]}-2)); i>=0; i-- )); do
         case ${BASH_ARGV[$i]} in
         "--tag"|"-t")
             lpar["TAGS"]="${lpar["TAGS"]} $(echo ${BASH_ARGV[$(($i-1))]}|sed 's/,/\ /g') "
@@ -124,10 +91,11 @@ parseArguments(){
             ;;
         
         *)
-            [[ -e ${BASH_ARGV[$i]} ]] \
-                && lpar["PATHS"]="${lpar["PATHS"]} ${BASH_ARGV[$i]}" \
-                || { echo "ERROR: ${BASH_ARGV[$i]} is neither command nor flag or file." ;
-                     exit ; }
+           # [[ -e ${BASH_ARGV[$i]} ]] \
+           #     && lpar["PATHS"]="${lpar["PATHS"]} ${BASH_ARGV[$i]}" \
+           #     || { echo "ERROR: ${BASH_ARGV[$i]} is neither command nor flag or file." ;
+           #          exit ; }
+            lpar["PATHS"]="${lpar["PATHS"]} ${BASH_ARGV[$i]}"
             ;;
         esac
     done
@@ -135,9 +103,9 @@ parseArguments(){
 
 #Signature $1=file 2=tags $3=secure $4=interactive
 createMETA(){
-    FILENAME=$(basename $1)
-    FILEPATH=$(dirname $(readlink -f $1))
-    local -n TAGS=$2
+    FILENAME=$(basename ${1})
+    FILEPATH=$(dirname $(readlink -f ${1}))
+    TAGS=(${2})
     SECURE=${3:-0} #Sets secure to 0 if not set.
     INTERACTIVE=${4:-0} #Sets interactive to 0 if not set
 
@@ -152,7 +120,7 @@ createMETA(){
          
     #Create __META-File
     METAFILE="__META-$(basename $1)"
-    [[ $SECURE -eq 1 ]] && METAFILE="SECURE/META/${METAFILE}" || METAFILE="META/${METAFILE}"
+    [[ $SECURE -eq 1 ]] && METAFILE="$SMETA/${METAFILE}" || METAFILE="$META/${METAFILE}"
     touch ${METAFILE}
     ##NOTE: while >> is standard output-redirection <<- is here-docs
     ##SEE: http://tldp.org/LDP/abs/html/here-docs.html
@@ -168,35 +136,39 @@ EOF
 echo $SECURE
 }
 
-isInStore(){
-    [ -e "$MAINDIR/META/__META-$(basename ${1})" ] && echo 1 || echo 0
+isNotInStore(){
+    [ -e "$MAINDIR/META/__META-$(basename ${1})" ] && echo 0 || echo 1
 }
 
 #Signature add FILE2ADD suppliedTags[@] $secure $carefully
 add(){ 
-    file2add=${1}
-    TAGS=(${!2})
-    SECURE=${3}
-    carefully=${4}
+    local -n lpar=$1
 
-    [[ ! $(isInStore $1) -eq 1 ]] \
-    && newSECUREval=$(createMETA $1 ${2} $3 $4) \
-    || { echo "Already in store" ; exit ; }
+    lpar["PATHS"]=$(filter isNotInStore ${lpar["PATHS"]})
+    #TODO: Implement refmap that takes additional arguments to supplied function
+    [ ${#lpar["PATHS"]} -eq 0 ] && { echo "Nothing to add. Everything is already in store"; exit ; }
+    lpar["SECURE"]=$(refmap createMETA lpar["PATHS"] ${lpar["TAGS"]})
     
     ##createMETA returns the new value of SECURE 
     ##since it sets that value depending on the files location
-    SECURE=$newSECUREval
+    
 
     #Importing File and creating symlink in place
-    case $SECURE in 
-        1) sudo mv $1 $SSTORE/
-           sudo ln -s $SSTORE/$(basename $file2add) $(readlink -f $1)
-           ;;
-        0) mv $1 $STORE/
-           ln -s $STORE/$(basename $file2add) $(readlink -f $1)
-           ;;
-    esac
 
+    local -a SECURE=(${lpar["SECURE"]})
+    local -a PATHS=(${lpar["PATHS"]})
+
+    for (( i=0; i<=${#PATHS[@]}; i++ )); do
+        case ${SECURE[$i]} in 
+            1) sudo mv ${PATHS[$i]} $SSTORE/
+               sudo ln -s $SSTORE/$(basename ${PATHS[$i]}) $(readlink -f ${PATHS[$i]})
+               ;;
+            0) mv ${PATHS[$i]} $STORE/
+               ln -s $STORE/$(basename ${PATHS[$i]}) $(readlink -f ${PATHS[$i]})
+               ;;
+        esac
+    done
+    
 }
 
 #link(){ 
@@ -224,29 +196,12 @@ modify(){
 
 
 main(){ #Entrypoint to the script
-    #suppliedTags=($(getTags $@))
-    #secureMode=$(isSecureMode $@)
-    #careful=$(isCareful $@)
-    #echo "Tags: ${suppliedTags[@]}"
-    #echo "Securemode: $secureMode"
-    #echo "Careful: $careful"
-
-#    case "$1" in
-#       "help"|"-h"      ) help ;;
-#       "add"|"a"        ) add ${BASH_ARGV:-1} suppliedTags[@] $secureMode $careful ;; 
-#       "justadd"|"ja"   ) add ${BASH_ARGV:-1} suppliedTags[@] $secureMode $careful 1 ;;  
-#       "link"|"l"       ) link ;; 
-#       "update"|"up"    ) ;; 
-#       "modify"|"mod"   ) modify $2 ;; 
-#       "init"           ) ;; 
-#       "inits"          ) ;; 
-#       "report"|"rp"    ) ;;
-#                       *) echo "Invalid command: ${1}"; help ;; 
-#    esac
 declare -A parameters # -A SUPER IMPORTANT. WONT WORK OTHERWISE: -A == associative array
 parseArguments parameters 
-echo "COMMAND: ${parameters["CMD"]}"
-echo "TAGS: ${parameters["TAGS"]}"
-echo "FILES: ${parameters["PATHS"]}"
+#echo "COMMAND: ${parameters["CMD"]}"
+#echo "TAGS: ${parameters["TAGS"]}"
+#echo "FILES: ${parameters["PATHS"]}"
+
+${parameters["CMD"]} parameters
 }
 main
