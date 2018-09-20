@@ -2,15 +2,8 @@
 
 ###LIBRARIES TO LOAD
 source ../Functional-Bash/functional.sh
-[ -e $HOME/.scm ] && source $HOME/.scm
-#CONFIG FILE SHOULD LOOK STH LIKE THIS:
-#MAINDIR="$HOME/user/.configStore"
-#STORE="$MAINDIR/STORE"
-#META="$MAINDIR/META"
-#SECURE="$MAINDIR/SECURE"
-#SMETA="$SECURE/META"
-
-###START GLOBAL CONSTANTS
+CONFIGFILE="$HOME/.scm"
+[ -e $CONFIGFILE ] && source $CONFIGFILE
 
 flags=(
 #possible flags to supply to the scriipt
@@ -24,7 +17,6 @@ flags=(
        "modify;mod"
        "remove;rm"
        "initialise;init"
-       "init-secure-store;inits"
        "report;rp"
        "--tag;-t"
        "--secure;-s"
@@ -39,7 +31,6 @@ descriptions=("$(basename $0) command --flag --tag tag1,tag2,tagN file\nPrints t
               "Allows the user to modify a files's config"
               "Removes from storage"
               "Initialises config-storage with supplied git-repo"
-              "Initialised secure config-storage and secure-config daemon"
               "Print report about configs in effect"
               "Lets the user specify one or more tags. [tag1,tag2,..,tagN]"
               "Lets the user specify the mode of operation. Secure or insecure"
@@ -67,55 +58,54 @@ help(){
  }
 
 parseArguments(){
-    local -n lpar=$1
-
+#NOTE 1: using BASH_ARGV to access arguments passed to the script reverses their order.
+#      This is due to arguments being saved in a LIFO stack as opposed to an array.
+#See:  https://lists.gnu.org/archive/html/bug-bash/2014-11/msg00158.html
+#For this reason the next line checks the last element of the array to access the first passed to the script.
     case ${BASH_ARGV[-1]} in
-        "help"|"-h"|"--help"      ) lpar["CMD"]=help ;;
-        "add"|"a"        ) lpar["CMD"]="add"  ;;
-        "justadd"|"ja"   ) lpar["CMD"]=justadd ;;
-        "link"|"l"       ) lpar["CMD"]=link ;;
-        "update"|"up"    ) lpar["CMD"]=update ;;
-        "modify"|"mod"   ) lpar["CMD"]=modify ;;
-        "init"           );;
-        "inits"          );;
-        "report"|"rp"    );;
-                        *) echo "ERROR: First parameter has to be command. See --help"; exit ;;
+        "help"|"-h"|"--help"    ) parameters["CMD"]=help ;;
+        "add"|"a"               ) parameters["CMD"]=add  ;;
+        "justadd"|"ja"          ) parameters["CMD"]=justadd ;;
+        "link"|"l"              ) parameters["CMD"]=link ;;
+        "update"|"up"           ) parameters["CMD"]=update ;;
+        "modify"|"mod"          ) parameters["CMD"]=modify ;;
+        "init"                  ) parameters["CMD"]=init ;;
+        "report"|"rp"           ) parameters["CMD"]=report ;;
+                               *) echo "ERROR: First parameter has to be command. See --help"; exit ;;
     esac
 
+#SEE NOTE 1
     for (( i=$((${#BASH_ARGV[@]}-2)); i>=0; i-- )); do
         case ${BASH_ARGV[$i]} in
         "--tag"|"-t")
-            lpar["TAGS"]="${lpar["TAGS"]} $(echo ${BASH_ARGV[$(($i-1))]}|sed 's/,/\ /g') "
+            parameters["TAGS"]="${parameters["TAGS"]} $(echo ${BASH_ARGV[$(($i-1))]}|sed 's/,/\ /g') "
             i=$(($i-1))
             ;;
         "-s"|"--secure") 
-            lpar["SECURE"]=1
+            parameters["SECURE"]=1
             ;;
-        
         "--carefully") 
-            lpar["CAREFUL"]=1
+            parameters["CAREFUL"]=1
             ;;
-        
         *)
-           # [[ -e ${BASH_ARGV[$i]} ]] \
-           #     && lpar["PATHS"]="${lpar["PATHS"]} ${BASH_ARGV[$i]}" \
-           #     || { echo "ERROR: ${BASH_ARGV[$i]} is neither command nor flag or file." ;
-           #          exit ; }
-            lpar["PATHS"]="${lpar["PATHS"]} ${BASH_ARGV[$i]}"
+            parameters["PATHS"]="${parameters["PATHS"]}${BASH_ARGV[$i]} "
             ;;
         esac
     done
 }
 
-#Signature $1=file 2=tags $3=secure $4=interactive
+##createMETA returns the new value of SECURE 
+##since it sets that value depending on the files location
 createMETA(){
+#Signature $1=file 2=tags $3=secure $4=interactive
     FILENAME=$(basename ${1})
     FILEPATH=$(dirname $(readlink -f ${1}))
-    TAGS=(${2})
+    TAGS=(${2:-"default"})
     SECURE=${3:-0} #Sets secure to 0 if not set.
     INTERACTIVE=${4:-0} #Sets interactive to 0 if not set
 
     #if $HOME in FILEPATH || substitutes /home/<user>/ with HOME in METAFILE
+    #This allows for anonymisation of usernames in file-paths
     if [[ $(grep $HOME <<< $FILEPATH) ]]; then 
         DIRNAME="HOME/"$(cut -d '/' -f4- <<< $FILEPATH)
     else
@@ -123,7 +113,7 @@ createMETA(){
         #Checks if in non-user-owned dir. Sets secure.
         [ ! -O $DIRNAME ] && SECURE=1 || SECURE=0
     fi
-         
+
     #Create __META-File
     METAFILE="__META-$(basename $1)"
     [[ $SECURE -eq 1 ]] && METAFILE="$SMETA/${METAFILE}" || METAFILE="$META/${METAFILE}"
@@ -131,83 +121,170 @@ createMETA(){
     ##NOTE: while >> is standard output-redirection <<- is here-docs
     ##SEE: http://tldp.org/LDP/abs/html/here-docs.html
     [[ $SECURE -eq 1 ]] && CMD="sudo tee" || CMD="cat"
-        
+
     eval $CMD >> ${METAFILE} <<- EOF
-FILENAME=$FILENAME 
-DIRNAME=$DIRNAME
-TAGS=${TAGS[@]}
-SECURE=$SECURE
-EOF
+	FILENAME=$FILENAME 
+	DIRNAME=$DIRNAME
+	TAGS=${TAGS[@]}
+	SECURE=$SECURE
+	EOF
 
 echo $SECURE
 }
 
 isNotInStore(){
-    [ -e "$MAINDIR/META/__META-$(basename ${1})" ] && echo 0 || echo 1
+    #Checks if file is already in store by looking for corresponding META-file
+    [ -e "$META/__META-$(basename ${1})" ] || [ -e "$SMETA/__META-$(basename ${1})" ] \
+    && echo 0 || echo 1
 }
 
-#Signature add FILE2ADD suppliedTags[@] $secure $carefully
+#Adds files to the storage
 add(){ 
-    local -n lpar=$1
+    parameters["PATHS"]=$(filter isNotInStore ${parameters["PATHS"]})
 
-    lpar["PATHS"]=$(filter isNotInStore ${lpar["PATHS"]})
-    #TODO: Implement refmap that takes additional arguments to supplied function
-    [ ${#lpar["PATHS"]} -eq 0 ] && { echo "Nothing to add. Everything is already in store"; exit ; }
-    lpar["SECURE"]=$(refmap createMETA lpar["PATHS"] ${lpar["TAGS"]})
-    
-    ##createMETA returns the new value of SECURE 
-    ##since it sets that value depending on the files location
-    
+    [ "${parameters["PATHS"]}" == "" ] && { echo "Nothing to add. Everything is already in store"; exit ; }
+    parameters["SECURE"]=$(refmap createMETA parameters["PATHS"] ${parameters["TAGS"]})
+
+    #Array-izing possible multiple values inside of parameters' fields. (using default IFS=" ") 
+    #Because Bash has no concept of multidimensional arrays but requires one to loop over things.
+    local -a SECURE=(${parameters["SECURE"]})
+    local -a PATHS=(${parameters["PATHS"]})
 
     #Importing File and creating symlink in place
-
-    local -a SECURE=(${lpar["SECURE"]})
-    local -a PATHS=(${lpar["PATHS"]})
-
     for (( i=0; i<=${#PATHS[@]}; i++ )); do
+        FILE=$(basename ${PATHS[$i]})
         case ${SECURE[$i]} in 
             1) sudo mv ${PATHS[$i]} $SSTORE/
-               sudo ln -s $SSTORE/$(basename ${PATHS[$i]}) $(readlink -f ${PATHS[$i]})
+               link $FILE
                ;;
             0) mv ${PATHS[$i]} $STORE/
-               ln -s $STORE/$(basename ${PATHS[$i]}) $(readlink -f ${PATHS[$i]})
+               link $FILE
                ;;
         esac
     done
-    
+
 }
 
-#link(){ 
-#    
-#}
+getFiles4Tag(){ 
+    local -a TAG=$1
+    local -a FILENAMES
+    FILENAMES=($(grep -RE "TAGS=.*${TAG}.*" {${META},${SMETA}} | cut -d':' -f 1 | cut -d'-' -f 2))
+    echo ${FILENAMES[@]}
+}
 
+getFileTargetDir(){
+    local FILE=$1
+    TARGETDIR=$(grep -RE "DIRNAME" {${META},${SMETA}}/__META-$FILE | cut -d'=' -f2 )
+    echo $TARGETDIR
+}
+
+linkFile(){
+    local FILE=$1
+    local TARGETDIR=$2
+    [ ! -O $TARGETDIR ] \
+    && { 
+        echo "Linking file to non-user directory. Require superuser privileges" 
+        sudo ln -s $STORE/$FILE $TARGETDIR/$FILE
+        sudo echo $FILE >> $SLINKS
+       } \
+    || { 
+        ln -s $STORE/$FILE $TARGETDIR/$FILE
+        echo $FILE >> $LINKS 
+       }
+}
+
+isNotLinked(){
+    grep -x $1 {${LINKS},${SLINKS}}
+    [ $? -eq 1  ] && echo 1 || echo 0
+}
+
+link(){ 
+    #Variants: 
+        #1. nothing supplied => link all tagged 'default'
+        #2. tag supplied     => link all with supplied tags
+        #3. file supplied    => link only the supplied file
+    #Passable variable for calling of link() from within other functions (with $1 supplied)
+    local -a FILES2LINK=(${1:-""})
+    local -a TARGETDIRS=()
+    local -a TAGS=()
+    
+    #determine if called directly. if so $1 is NOT set, meaning FILES2LINK contains only ""
+    [ "${FILES2LINK[@]}" == "" ] && {
+        [ "${parameters["TAGS"]}" == "" ]    && TAGS=("default") || TAGS=(${parameters["TAGS"]})
+        [ "${parameters["PATHS"]}" == "" ]   && FILES2LINK=()    || FILES2LINK=(${parameters["PATHS"]})
+        FILES2LINK=(${FILES2LINK[@]} $(map getFiles4Tag ${TAGS[@]}))
+        }    
+
+    #Check if files have been linked already
+    local -a UNLINKEDFILES=($(reffilter isNotLinked FILES2LINK[@]))
+    [ ${#UNLINKEDFILES[@]} -eq 0 ] && { echo "Nothing to link. Everything already set. exiting.." ; exit ; }
+    
+    #Compute target-directories.
+    TARGETDIRS=$(map getFileTargetDir ${UNLINKEDFILES[@]})
+
+    #Avoid running actually linking with invalid tags or w/o files or targets.
+    [ "${#TARGETDIRS[@]}" == "" ] \
+        && zipWith linkFile FILES2LINK[@] TARGETDIRS[@] \
+        || echo "No such file: ${parameters["PATHS"]}"
+}
+
+#unlink(){
+#}
 #
 #update(){ 
 #    SUPPOSED_PATH=$(
 #}
 
 modify(){ 
-    [[ -e $MAINDIR/META/__META-$1 ]] \
-    && $EDITOR $MAINDIR/META/__META-$1 \
-    || echo "--META-$1 does not exist"
+    [[ -e $MAINDIR/META/__META-${parameters["PATHS"]} ]] \
+    && $EDITOR $MAINDIR/META/__META-${parameters["PATHS"]} \
+    || echo "__META-${parameters["PATHS"]} does not exist"
 }
 #
 #remove(){ ; }
 #
-#init(){ ; }
-#
-#inits(){ ; }
-#
-#report(){ ; }
+init(){ 
+    if [ -e $CONFIGFILE ]; then 
+        echo "$CONFIGFILE exists. recreating config-store accordingly" 
+    else
+        echo "No configfile under $CONFIGFILE. Creating new one.." ; touch $CONFIGFILE ;
+        MAINDIR="$HOME/.configStore"
+        cat >> $CONFIGFILE <<- EOF
+		MAINDIR="$MAINDIR"
+		STORE="$MAINDIR/STORE"
+		META="$MAINDIR/META"
+		LINKS="$MAINDIR/LINKS"
+		SECURE="$MAINDIR/SECURE"
+		SMETA="$MAINDIR/SECURE/META"
+		SLINKS="$MAINDIR/SECURE/SLINKS"
+		EOF
+    fi
+    
+    echo "Creating folders..."
+    source $CONFIGFILE
+    [ ! -e $MAINDIR ]   && { mkdir $MAINDIR ; echo "Creating $MAINDIR" ; }   || echo "$MAINDIR exists. ...skipping"
+    [ ! -e $STORE ]     && { mkdir $STORE ; echo "Creating $STORE" ; }     || echo "$STORE exists. ...skipping"
+    [ ! -e $META ]      && { mkdir $META ; echo "Creating $META" ; }      || echo "$META exists. ...skipping"
+    [ ! -e $LINKS ]     && { touch $LINKS ; echo "Creating $LINKS" ; }     || echo "$LINKS exists. ...skipping"
+    [ ! -e $SECURE ]    && { sudo mkdir $SECURE ; echo "Creating $SECURE" ; }    || echo "$SECURE exists. ...skipping"
+    [ ! -e $SMETA ]     && { sudo mkdir $SMETA ; echo "Creating $SMETA" ; }     || echo "$SMETA exists. ...skipping"
+    [ ! -e $SLINKS ]    && { sudo touch $SLINKS ; echo "Creating $SLINKS" ; }    || echo "$SLINKS exists. ...skipping"
+
+    echo "The next action requires sudo. Please enter password."
+    sudo chown -R root $SECURE
+}
+
+report(){
+    echo "This files are currently linked:"
+    while read p; do
+        printf "%s ---> %s \n" $p $(grep -RE DIRNAME $META/__META-$p|cut -d'=' -f2)
+    done < $LINKS
+}
 
 
+declare -A parameters # -A SUPER IMPORTANT. WON'T WORK OTHERWISE: -A == associative array
 main(){ #Entrypoint to the script
-declare -A parameters # -A SUPER IMPORTANT. WONT WORK OTHERWISE: -A == associative array
-parseArguments parameters 
-#echo "COMMAND: ${parameters["CMD"]}"
-#echo "TAGS: ${parameters["TAGS"]}"
-#echo "FILES: ${parameters["PATHS"]}"
-
-${parameters["CMD"]} parameters
+    parseArguments #parameters 
+    ${parameters["CMD"]}
 }
 main
