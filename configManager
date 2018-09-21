@@ -67,6 +67,7 @@ parseArguments(){
         "add"|"a"               ) parameters["CMD"]=add  ;;
         "justadd"|"ja"          ) parameters["CMD"]=justadd ;;
         "link"|"l"              ) parameters["CMD"]=link ;;
+        "unlink"|"ul"           ) parameters["CMD"]=unlink ;;
         "update"|"up"           ) parameters["CMD"]=update ;;
         "modify"|"mod"          ) parameters["CMD"]=modify ;;
         "init"                  ) parameters["CMD"]=init ;;
@@ -107,7 +108,7 @@ createMETA(){
     #if $HOME in FILEPATH || substitutes /home/<user>/ with HOME in METAFILE
     #This allows for anonymisation of usernames in file-paths
     if [[ $(grep $HOME <<< $FILEPATH) ]]; then 
-        DIRNAME="HOME/"$(cut -d '/' -f4- <<< $FILEPATH)
+        DIRNAME="HOME"$(cut -d '/' -f4- <<< $FILEPATH)
     else
         DIRNAME=$FILEPATH
         #Checks if in non-user-owned dir. Sets secure.
@@ -181,20 +182,33 @@ getFileTargetDir(){
 linkFile(){
     local FILE=$1
     local TARGETDIR=$2
-    [ ! -O $TARGETDIR ] \
-    && { 
+    [ "$(echo $TARGETDIR|grep -Eo '^HOME')" == "HOME" ] && TARGETDIR=$(echo $TARGETDIR|sed "s|^HOME|$HOME|")
+
+    if [ ! -O $TARGETDIR ]; then 
         echo "Linking file to non-user directory. Require superuser privileges" 
-        sudo ln -s $STORE/$FILE $TARGETDIR/$FILE
+        sudo ln -s $SECURE/$FILE $TARGETDIR/$FILE
         sudo echo $FILE >> $SLINKS
-       } \
-    || { 
+    else 
         ln -s $STORE/$FILE $TARGETDIR/$FILE
         echo $FILE >> $LINKS 
-       }
+    fi
+}
+
+unlinkFiles(){
+    local FILE=$1
+    local TARGETDIR=$2
+    [ $(echo $TARGETDIR|grep -Eo '^HOME') ] && TARGETDIR=$(echo $TARGETDIR|sed "s|^HOME|$HOME|")
+
+    if [ -O $TARGETDIR ]; then
+        rm $TARGETDIR/$FILE ; sed -i "/^$FILE/d" $LINKS ; 
+    else 
+        echo "Deleting "$FILE" from root-owned "$TARGETDIR" requires sudo."
+        sudo rm $TARGETDIR/$FILE ; sudo sed -i "|^$FILE|d" $SLINKS ; 
+    fi
 }
 
 isNotLinked(){
-    grep -x $1 {${LINKS},${SLINKS}}
+    grep -x $1 {${LINKS},${SLINKS}} &>/dev/null
     [ $? -eq 1  ] && echo 1 || echo 0
 }
 
@@ -210,34 +224,63 @@ link(){
     
     #determine if called directly. if so $1 is NOT set, meaning FILES2LINK contains only ""
     [ "${FILES2LINK[@]}" == "" ] && {
-        [ "${parameters["TAGS"]}" == "" ]    && TAGS=("default") || TAGS=(${parameters["TAGS"]})
+        [ "${parameters["TAGS"]}" == "" ] && [ "${parameters["PATHS"]}" == "" ] \
+        && TAGS=("default") || TAGS=(${parameters["TAGS"]})
+        
         [ "${parameters["PATHS"]}" == "" ]   && FILES2LINK=()    || FILES2LINK=(${parameters["PATHS"]})
         FILES2LINK=(${FILES2LINK[@]} $(map getFiles4Tag ${TAGS[@]}))
         }    
 
-    #Check if files have been linked already
+    #filter for files that have not been linked already
     local -a UNLINKEDFILES=($(reffilter isNotLinked FILES2LINK[@]))
     [ ${#UNLINKEDFILES[@]} -eq 0 ] && { echo "Nothing to link. Everything already set. exiting.." ; exit ; }
     
     #Compute target-directories.
-    TARGETDIRS=$(map getFileTargetDir ${UNLINKEDFILES[@]})
+    TARGETDIRS=$(refmap getFileTargetDir UNLINKEDFILES[@])
 
     #Avoid running actually linking with invalid tags or w/o files or targets.
-    [ "${#TARGETDIRS[@]}" == "" ] \
+    [ "${#TARGETDIRS[@]}" != "" ] \
         && zipWith linkFile FILES2LINK[@] TARGETDIRS[@] \
         || echo "No such file: ${parameters["PATHS"]}"
 }
 
-#unlink(){
-#}
-#
+unlink(){
+    #Variants:
+        #1. nothing supplied => unlink all tagged 'default'
+        #2. tag supplied => unlink all with supplied tags
+        #3. file supplied unlink file if it exists and is linked.
+    local -a FILES2UNLINK=()
+    local -a TAGS=()
+
+    #compute list of files for supplied tags, set (provisional) files to unlink, set tags to default if none specified.
+    [ "${parameters["TAGS"]}" == "" ]    && TAGS=("default") || TAGS=(${parameters["TAGS"]})
+    [ "${parameters["PATHS"]}" == "" ]   && FILES2UNLINK=()    || FILES2UNLINK=(${parameters["PATHS"]})
+    FILES2UNLINK=(${FILES2LINK[@]} $(map getFiles4Tag ${TAGS[@]}))
+
+    #filter for files that exist in store by checking if corresponding __META-files exist.
+    hasMETA(){ [ -e $META/__META-$1 ] || [ -e $SMETA/__META-$1 ] && echo 1 || echo 0 ; }
+    tmp=($(reffilter hasMETA FILES2UNLINK[@]))
+
+    #filter for files that are linked
+    isLinked(){ grep -x $1 {${LINKS},${SLINKS}} &>/dev/null ;  [ $? -eq 0  ] && echo 1 || echo 0 ; }
+    FILES2UNLINK=($(reffilter isLinked tmp[@]))
+
+    #Compute target-directories.
+    TARGETDIRS=$(map getFileTargetDir ${FILES2UNLINK[@]})
+
+    #actually unlink files by removing the symbolik link and the entry in the linked files list.
+    [ ${#FILES2UNLINK[@]} -ge 1 ] && [ ${#TARGETDIRS[@]} -ge 1 ] \
+    && zipWith unlinkFiles FILES2UNLINK[@] TARGETDIRS[@] \
+    || echo "Nothing to unlink"
+}
+
 #update(){ 
 #    SUPPOSED_PATH=$(
 #}
 
 modify(){ 
-    [[ -e $MAINDIR/META/__META-${parameters["PATHS"]} ]] \
-    && $EDITOR $MAINDIR/META/__META-${parameters["PATHS"]} \
+    [[ -e $META/__META-${parameters["PATHS"]} ]] \
+    && $EDITOR $META/__META-${parameters["PATHS"]} \
     || echo "__META-${parameters["PATHS"]} does not exist"
 }
 #
